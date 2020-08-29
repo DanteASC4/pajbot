@@ -15,6 +15,11 @@ from pajbot.utils import iterate_in_chunks
 log = logging.getLogger(__name__)
 
 
+class UserStream:
+    def __init__(self, viewer_count=-1, game_id=None, title=None, started_at=None, id=None):
+        pass
+
+
 class TwitchHelixAPI(BaseTwitchAPI):
     authorization_header_prefix = "Bearer"
 
@@ -290,3 +295,46 @@ class TwitchHelixAPI(BaseTwitchAPI):
         clip_id = response["data"][0]["id"]
 
         return clip_id
+
+    # _bulk_fetch_user_stream_by_id(self, user_ids)
+    # fetch_user_stream_by_id(self, user_id)
+    # get_user_stream_by_id(self, user_id)
+
+    def _bulk_fetch_user_stream_by_id(self, user_ids):
+        all_entries = []
+
+        for user_ids_chunk in iterate_in_chunks(user_ids, 100):
+            response = self.get("/streams", {"user_id": user_ids_chunk})
+
+            response_map = {response_entry["user_id"]: response_entry for response_entry in response["data"]}
+
+            for user_id in user_ids_chunk:
+                all_entries.append(response_map.get(user_id, None))
+
+        return all_entries
+
+        if len(response["data"]) <= 0:
+            return None
+
+        info = response["data"][0]
+
+        return UserChannelInformation(info["broadcaster_language"], info["game_id"], info["game_name"], info["title"])
+
+    def _fetch_user_stream_by_id(self, user_id):
+        response = self.get("/streams", {"user_id": user_id})
+
+        if len(response["data"]) <= 0:
+            # Stream is offline
+            return None
+
+        stream = response["data"][0]
+
+        return UserStream(stream["game_id"], stream["type"])
+
+    def get_user_stream_by_id(self, user_id):
+        return self.cache.cache_fetch_fn(
+            redis_key=f"api:twitch:helix:stream:by-id:{user_id}",
+            fetch_fn=lambda: self._fetch_user_stream_by_id(user_id),
+            serializer=ClassInstanceSerializer(UserStream),
+            expiry=lambda response: 30 if response is None else 300,
+        )
