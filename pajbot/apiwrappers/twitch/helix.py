@@ -1,3 +1,4 @@
+from typing import Optional, List
 import logging
 import time
 
@@ -7,17 +8,83 @@ import math
 from requests import HTTPError
 
 from pajbot import utils
-from pajbot.apiwrappers.response_cache import DateTimeSerializer, ClassInstanceSerializer
+from pajbot.apiwrappers.response_cache import DateTimeSerializer, ClassInstanceSerializer, ListSerializer
 from pajbot.apiwrappers.twitch.base import BaseTwitchAPI
-from pajbot.models.user import UserBasics, UserChannelInformation
+from pajbot.models.user import UserBasics, UserChannelInformation, UserStream
 from pajbot.utils import iterate_in_chunks
 
 log = logging.getLogger(__name__)
 
 
-class UserStream:
-    def __init__(self, viewer_count=-1, game_id=None, title=None, started_at=None, id=None):
-        pass
+class TwitchVideo:
+    def __init__(
+        self,
+        id: str,
+        user_id: str,
+        user_name: str,
+        title: str,
+        description: str,
+        created_at: str,
+        published_at: str,
+        url: str,
+        thumbnail_url: str,
+        viewable: str,
+        view_count: int,
+        language: str,
+        video_type: str,
+        duration: str,
+    ):
+        self.id: str = id
+        self.user_id: str = user_id
+        self.user_name: str = user_name
+        self.title: str = title
+        self.description: str = description
+        self.created_at: str = created_at
+        self.published_at: str = published_at
+        self.url: str = url
+        self.thumbnail_url: str = thumbnail_url
+        self.viewable: str = viewable
+        self.view_count: int = view_count
+        self.language: str = language
+        self.video_type: str = video_type
+        self.duration: str = duration
+
+    def jsonify(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "user_name": self.user_name,
+            "title": self.title,
+            "description": self.description,
+            "created_at": self.created_at,
+            "published_at": self.published_at,
+            "url": self.url,
+            "thumbnail_url": self.thumbnail_url,
+            "viewable": self.viewable,
+            "view_count": self.view_count,
+            "language": self.language,
+            "video_type": self.video_type,
+            "duration": self.duration,
+        }
+
+    @staticmethod
+    def from_json(json_data):
+        return TwitchVideo(
+            json_data["id"],
+            json_data["user_id"],
+            json_data["user_name"],
+            json_data["title"],
+            json_data["description"],
+            json_data["created_at"],
+            json_data["published_at"],
+            json_data["url"],
+            json_data["thumbnail_url"],
+            json_data["viewable"],
+            json_data["view_count"],
+            json_data["language"],
+            json_data["video_type"],
+            json_data["duration"],
+        )
 
 
 class TwitchHelixAPI(BaseTwitchAPI):
@@ -143,7 +210,7 @@ class TwitchHelixAPI(BaseTwitchAPI):
 
         return UserChannelInformation(info["broadcaster_language"], info["game_id"], info["game_name"], info["title"])
 
-    def get_channel_information(self, user_id):
+    def get_channel_information(self, user_id) -> Optional[UserChannelInformation]:
         """Gets the channel information of a Twitch user for the given Twitch user ID,
         utilizing a cache or the Twitch API on cache miss.
         If no channel with the user exists, None is returned.
@@ -296,45 +363,58 @@ class TwitchHelixAPI(BaseTwitchAPI):
 
         return clip_id
 
-    # _bulk_fetch_user_stream_by_id(self, user_ids)
-    # fetch_user_stream_by_id(self, user_id)
-    # get_user_stream_by_id(self, user_id)
-
-    def _bulk_fetch_user_stream_by_id(self, user_ids):
-        all_entries = []
-
-        for user_ids_chunk in iterate_in_chunks(user_ids, 100):
-            response = self.get("/streams", {"user_id": user_ids_chunk})
-
-            response_map = {response_entry["user_id"]: response_entry for response_entry in response["data"]}
-
-            for user_id in user_ids_chunk:
-                all_entries.append(response_map.get(user_id, None))
-
-        return all_entries
-
-        if len(response["data"]) <= 0:
-            return None
-
-        info = response["data"][0]
-
-        return UserChannelInformation(info["broadcaster_language"], info["game_id"], info["game_name"], info["title"])
-
-    def _fetch_user_stream_by_id(self, user_id):
+    def _fetch_user_stream_by_id(self, user_id) -> UserStream:
         response = self.get("/streams", {"user_id": user_id})
 
         if len(response["data"]) <= 0:
             # Stream is offline
-            return None
+            return UserStream.offline()
 
         stream = response["data"][0]
 
-        return UserStream(stream["game_id"], stream["type"])
+        return UserStream(
+            stream["viewer_count"], stream["game_id"], stream["title"], stream["started_at"], stream["id"],
+        )
 
-    def get_user_stream_by_id(self, user_id):
+    def get_user_stream_by_id(self, user_id) -> UserStream:
         return self.cache.cache_fetch_fn(
             redis_key=f"api:twitch:helix:stream:by-id:{user_id}",
             fetch_fn=lambda: self._fetch_user_stream_by_id(user_id),
             serializer=ClassInstanceSerializer(UserStream),
+            expiry=lambda response: 30 if response is None else 300,
+        )
+
+    def _fetch_videos_by_user_id(self, user_id) -> List[TwitchVideo]:
+        response = self.get("/videos", {"user_id": user_id})
+
+        videos = []
+
+        for video in response["data"]:
+            videos.append(
+                TwitchVideo(
+                    video["id"],
+                    video["user_id"],
+                    video["user_name"],
+                    video["title"],
+                    video["description"],
+                    video["created_at"],
+                    video["published_at"],
+                    video["url"],
+                    video["thumbnail_url"],
+                    video["viewable"],
+                    video["view_count"],
+                    video["language"],
+                    video["type"],
+                    video["duration"],
+                )
+            )
+
+        return videos
+
+    def get_videos_by_user_id(self, user_id) -> List[TwitchVideo]:
+        return self.cache.cache_fetch_fn(
+            redis_key=f"api:twitch:helix:videos:by-id:{user_id}",
+            fetch_fn=lambda: self._fetch_videos_by_user_id(user_id),
+            serializer=ListSerializer(TwitchVideo),
             expiry=lambda response: 30 if response is None else 300,
         )
